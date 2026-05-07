@@ -1,0 +1,252 @@
+package main
+
+import (
+	"context"
+	"log"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"reward-service/config"
+
+	natsEarnAdapter "reward-service/enterprise_reward/internal/adapter/NATS_earn_reward"
+	natsRedeemAdapter "reward-service/enterprise_reward/internal/adapter/NATS_redeem"
+	httpadapter "reward-service/enterprise_reward/internal/adapter/http"
+	repoAdapter "reward-service/enterprise_reward/internal/adapter/repository"
+	ruleDomain "reward-service/enterprise_reward/internal/domain"
+	"reward-service/enterprise_reward/internal/health"
+	httpInfra "reward-service/enterprise_reward/internal/integration/http"
+	natsInfra "reward-service/enterprise_reward/internal/integration/nats"
+	dbInfra "reward-service/enterprise_reward/internal/integration/postgres"
+	"reward-service/enterprise_reward/internal/lifecycle"
+	"reward-service/enterprise_reward/internal/middleware"
+	"reward-service/enterprise_reward/internal/observability"
+	"reward-service/enterprise_reward/internal/outbox"
+	"reward-service/enterprise_reward/internal/resilience"
+	historyHandler "reward-service/enterprise_reward/internal/service_logic/handler/history"
+	redeemHandler "reward-service/enterprise_reward/internal/service_logic/handler/redeem"
+	enterpriseSvc "reward-service/enterprise_reward/internal/service_logic/service/calculation"
+	redeemSvc "reward-service/enterprise_reward/internal/service_logic/service/redeem"
+
+	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus"
+)
+
+func main() {
+	cfg := config.Load()
+	feature := config.LoadFeature()
+
+	// ─── Observability setup ─────────────────────────────────────────────────
+	logger := observability.NewLogger("reward-service", slog.LevelInfo)
+	metrics := observability.NewMetrics(prometheus.DefaultRegisterer)
+
+	// ─── Graceful shutdown manager ────────────────────────────────────────────
+	shutdown := lifecycle.NewManager(15 * time.Second)
+
+	// ─── Root context ─────────────────────────────────────────────────────────
+	ctx, cancel := context.WithCancel(context.Background())
+	shutdown.Register("root-context", func(_ context.Context) error {
+		cancel()
+		return nil
+	})
+
+	// ─── PostgreSQL ───────────────────────────────────────────────────────────
+	db, err := dbInfra.NewPostgres(cfg.DB)
+	if err != nil {
+		log.Fatalf("[DB] error: %v", err)
+	}
+	shutdown.Register("postgres", func(_ context.Context) error {
+		dbInfra.Close(db)
+		return nil
+	})
+
+	// ─── NATS ─────────────────────────────────────────────────────────────────
+	natsClient, err := natsInfra.NewClient(cfg.NATS.URL)
+	if err != nil {
+		log.Fatalf("nats connect error: %v", err)
+	}
+	shutdown.Register("nats", func(_ context.Context) error {
+		natsClient.Close()
+		return nil
+	})
+
+	if err := natsInfra.EnsureStream(
+		natsClient.Js,
+		cfg.NATS.StreamName,
+		[]string{
+			cfg.NATS.SubjectHistory,
+			cfg.NATS.SubjectRewardEarn,
+			cfg.NATS.SubjectRedeemRequest,
+			cfg.NATS.SubjectRedeemResult,
+		},
+	); err != nil {
+		log.Fatalf("ensure stream error: %v", err)
+	}
+
+	// ─── Circuit breakers ─────────────────────────────────────────────────────
+	cbRegistry := resilience.NewCircuitBreakerRegistry()
+	cbConfig := resilience.CircuitBreakerConfig{
+		FailureThreshold: 5,
+		SuccessThreshold: 2,
+		Timeout:          30 * time.Second,
+		OnStateChange: func(name string, from, to resilience.State) {
+			logger.FromContext(ctx).Warn("circuit breaker state changed",
+				"name", name,
+				"from", from.String(),
+				"to", to.String(),
+			)
+			// Update Prometheus gauge
+			stateVal := map[resilience.State]float64{
+				resilience.StateClosed:   0,
+				resilience.StateOpen:     1,
+				resilience.StateHalfOpen: 2,
+			}
+			metrics.CircuitBreakerState.WithLabelValues(name).Set(stateVal[to])
+			if to == resilience.StateOpen {
+				metrics.CircuitBreakerTripped.WithLabelValues(name).Inc()
+			}
+		},
+	}
+
+	earnCB := cbRegistry.GetOrCreate("nats-earn-publish", cbConfig)
+	redeemCB := cbRegistry.GetOrCreate("nats-redeem-publish", cbConfig)
+
+	// ─── Repositories ────────────────────────────────────────────────────────
+	earnRepo := repoAdapter.NewEarnRepository(db)
+	redeemRepo := repoAdapter.NewRewardRedeemRepository(db)
+	rewardRule := ruleDomain.NewDefaultRewardRule()
+
+	// ─── Outbox relay (transactional messaging guarantee) ────────────────────
+	jsPublisher, err := natsInfra.NewJetStreamPublisher(natsClient.Conn)
+	if err != nil {
+		log.Fatalf("jetstream publisher error: %v", err)
+	}
+
+	outboxStore := outbox.NewStore(db)
+	outboxRelay := outbox.NewRelay(outboxStore, jsPublisher.Publish, 2*time.Second)
+	go outboxRelay.Start(ctx)
+
+	// ─── NATS producers ───────────────────────────────────────────────────────
+	rewardEarnProducer := natsEarnAdapter.NewRewardEarnProducer(
+		jsPublisher.Publish,
+		cfg.NATS.SubjectRewardEarn,
+	)
+
+	// ─── Rate limiter ─────────────────────────────────────────────────────────
+	rateLimiterStore := middleware.NewRateLimiterStore(
+		10,              // burst: 10 requests
+		2,               // refill: 2 req/sec
+		30*time.Minute,
+	)
+
+	// ─── Idempotency store ────────────────────────────────────────────────────
+	idempotencyStore := middleware.NewInMemoryIdempotencyStore(24 * time.Hour)
+
+	// ─── Services ─────────────────────────────────────────────────────────────
+	rewardService := enterpriseSvc.NewEnterpriseRewardCalculationService(
+		earnRepo,
+		rewardRule,
+		rewardEarnProducer,
+		metrics,
+		logger,
+		earnCB,
+	)
+
+	historyFlow := historyHandler.NewHistoryHandler(rewardService)
+
+	redeemProducer := natsRedeemAdapter.NewRedeemRequestProducer(
+		natsClient.Conn,
+		cfg.NATS.SubjectRedeemRequest,
+	)
+
+	redeemRequestService := enterpriseSvc.NewEnterpriseRedeemRequestService(
+		redeemRepo,
+		redeemProducer,
+		metrics,
+		logger,
+		redeemCB,
+	)
+
+	redeemResultService := redeemSvc.NewRedeemResultService(redeemRepo)
+	redeemRequestFlow := redeemHandler.NewRedeemRequestHandler(redeemRequestService)
+	redeemResultFlow := redeemHandler.NewRedeemResultHandler(redeemResultService)
+
+	// ─── NATS consumers ───────────────────────────────────────────────────────
+	if feature.History.Consume.Enable {
+		historyConsumer := natsEarnAdapter.NewHistoryConsumer(
+			natsClient.Js,
+			cfg.NATS.SubjectHistory,
+			cfg.NATS.SubjectHistory,
+			historyFlow,
+		)
+		go func() {
+			if err := historyConsumer.Start(ctx); err != nil {
+				slog.Error("[NATS] history consumer error", "error", err)
+			}
+		}()
+	}
+
+	if feature.Redeem.Consume.Enable {
+		resultConsumer := natsRedeemAdapter.NewRedeemResultConsumer(
+			natsClient.Conn,
+			cfg.NATS.SubjectRedeemResult,
+			redeemResultFlow,
+		)
+		if err := resultConsumer.Start(ctx); err != nil {
+			slog.Error("[NATS] redeem result consumer error", "error", err)
+		}
+	}
+
+	// ─── HTTP server ──────────────────────────────────────────────────────────
+	if feature.HTTP.Enable {
+		// Health checker
+		checker := health.NewChecker()
+		checker.Register("postgres", health.PostgresCheck(db))
+		checker.Register("nats", health.NATSCheck(natsClient.Conn))
+
+		router := gin.New()
+
+		// Core middleware (order matters)
+		router.Use(
+			observability.GinTracingMiddleware(logger),     // 1. inject trace IDs
+			observability.PrometheusMiddleware(metrics),    // 2. record metrics
+			gin.Recovery(),                                 // 3. catch panics
+			middleware.RateLimitMiddleware(rateLimiterStore, middleware.KeyByIP), // 4. rate limit
+			middleware.IdempotencyMiddleware(idempotencyStore), // 5. idempotency
+		)
+
+		// Register routes
+		httpadapter.RegisterRoutes(router, httpadapter.Handlers{
+			Redeem: redeemRequestFlow,
+		})
+
+		// Health + metrics endpoints (no rate limit)
+		health.RegisterHealthRoutes(router, checker, "reward-service")
+		observability.RegisterMetricsRoute(router)
+
+		// Circuit breaker status endpoint
+		router.GET("/api/v1/admin/circuit-breakers", func(c *gin.Context) {
+			c.JSON(http.StatusOK, cbRegistry.AllStats())
+		})
+
+		server := httpInfra.NewServer(
+			httpInfra.Config{Address: cfg.HTTP.Address},
+			router,
+		)
+
+		go func() {
+			if err := server.Start(); err != nil && err != http.ErrServerClosed {
+				slog.Error("[HTTP] server error", "error", err)
+			}
+		}()
+
+		shutdown.Register("http-server", func(ctx context.Context) error {
+			return server.Shutdown()
+		})
+	}
+
+	// ─── Block until signal ───────────────────────────────────────────────────
+	slog.Info("reward-service started", "http", cfg.HTTP.Address)
+	shutdown.WaitForSignal()
+	slog.Info("reward-service stopped")
+}

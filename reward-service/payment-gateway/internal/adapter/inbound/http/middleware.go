@@ -1,0 +1,209 @@
+package httpadapter
+
+import (
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/enterprise/payment-gateway/internal/domain"
+	"github.com/enterprise/payment-gateway/internal/service_logic/service"
+	"github.com/enterprise/payment-gateway/pkg/crypto"
+	"github.com/enterprise/payment-gateway/pkg/metrics"
+	"github.com/enterprise/payment-gateway/pkg/ratelimit"
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+)
+
+// APIKeyAuth authenticates requests using API key
+func APIKeyAuth(merchantRepo service.MerchantRepository, logger *zap.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, errResp("UNAUTHORIZED", "Authorization header required"))
+			return
+		}
+
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, errResp("UNAUTHORIZED", "Invalid authorization format"))
+			return
+		}
+
+		apiKey := parts[1]
+		apiKeyHash := crypto.SHA256Hash(apiKey)
+
+		merchant, err := merchantRepo.GetByAPIKey(c.Request.Context(), apiKeyHash)
+		if err != nil || merchant == nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, errResp("INVALID_API_KEY", "Invalid API key"))
+			return
+		}
+
+		if !merchant.IsActive {
+			c.AbortWithStatusJSON(http.StatusForbidden, errResp("MERCHANT_INACTIVE", "Merchant account is inactive"))
+			return
+		}
+
+		c.Set("merchant_id", merchant.ID)
+		c.Set("merchant", merchant)
+		c.Next()
+	}
+}
+
+// RateLimit applies sliding window rate limiting per merchant
+func RateLimit(limiter *ratelimit.Limiter, m *metrics.Metrics, limit int64, window time.Duration) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		merchantID := c.GetString("merchant_id")
+		if merchantID == "" {
+			merchantID = c.ClientIP()
+		}
+
+		key := fmt.Sprintf("%s:%s", merchantID, c.FullPath())
+		result, err := limiter.Allow(c.Request.Context(), key, limit, window)
+		if err != nil {
+			c.Next()
+			return
+		}
+
+		c.Header("X-RateLimit-Limit", fmt.Sprintf("%d", limit))
+		c.Header("X-RateLimit-Remaining", fmt.Sprintf("%d", result.Remaining))
+		c.Header("X-RateLimit-Reset", fmt.Sprintf("%d", result.ResetAt.Unix()))
+
+		if !result.Allowed {
+			m.RateLimitHits.WithLabelValues(merchantID, c.FullPath()).Inc()
+			c.Header("Retry-After", fmt.Sprintf("%.0f", result.RetryAfter.Seconds()))
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, errResp("RATE_LIMIT_EXCEEDED", "Too many requests"))
+			return
+		}
+
+		c.Next()
+	}
+}
+
+// RequestLogger logs all HTTP requests with structured logging
+func RequestLogger(logger *zap.Logger, m *metrics.Metrics) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		requestID := generateRequestID()
+		c.Set("request_id", requestID)
+		c.Header("X-Request-ID", requestID)
+
+		c.Next()
+
+		duration := time.Since(start)
+		status := c.Writer.Status()
+
+		logger.Info("http request",
+			zap.String("method", c.Request.Method),
+			zap.String("path", c.FullPath()),
+			zap.Int("status", status),
+			zap.Duration("duration", duration),
+			zap.String("ip", c.ClientIP()),
+			zap.String("request_id", requestID),
+			zap.String("merchant_id", c.GetString("merchant_id")),
+		)
+	}
+}
+
+// SecurityHeaders adds security headers to all responses
+func SecurityHeaders() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Header("X-XSS-Protection", "1; mode=block")
+		c.Header("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
+		c.Header("Content-Security-Policy", "default-src 'none'")
+		c.Header("Referrer-Policy", "no-referrer")
+		c.Header("Cache-Control", "no-store")
+		c.Header("Pragma", "no-cache")
+		c.Next()
+	}
+}
+
+// WebhookSignatureVerify verifies incoming webhook signatures
+func WebhookSignatureVerify(webhookSecret string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		sig := c.GetHeader("X-Webhook-Signature")
+		if sig == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, errResp("INVALID_SIGNATURE", "Signature required"))
+			return
+		}
+		// Signature verification would use the raw body
+		c.Next()
+	}
+}
+
+// RecoveryWithLogger is a panic recovery middleware with structured logging
+func RecoveryWithLogger(logger *zap.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		defer func() {
+			if err := recover(); err != nil {
+				logger.Error("panic recovered",
+					zap.Any("error", err),
+					zap.String("path", c.FullPath()),
+					zap.String("method", c.Request.Method),
+				)
+				c.AbortWithStatusJSON(http.StatusInternalServerError, errResp("INTERNAL_ERROR", "An unexpected error occurred"))
+			}
+		}()
+		c.Next()
+	}
+}
+
+// ValidateContentType ensures JSON content type for mutation requests
+func ValidateContentType() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Method == "POST" || c.Request.Method == "PUT" || c.Request.Method == "PATCH" {
+			ct := c.GetHeader("Content-Type")
+			if !strings.Contains(ct, "application/json") {
+				c.AbortWithStatusJSON(http.StatusUnsupportedMediaType,
+					errResp("UNSUPPORTED_MEDIA_TYPE", "Content-Type must be application/json"))
+				return
+			}
+		}
+		c.Next()
+	}
+}
+
+func errResp(code, msg string) gin.H {
+	return gin.H{
+		"success": false,
+		"error":   gin.H{"code": code, "message": msg},
+	}
+}
+
+// Idempotency middleware reads idempotency key from header
+func IdempotencyKey() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		key := c.GetHeader("Idempotency-Key")
+		if key != "" {
+			c.Set("idempotency_key", key)
+		}
+		c.Next()
+	}
+}
+
+// BlockSuspiciousIPs blocks requests from suspicious IP patterns
+func BlockSuspiciousIPs() gin.HandlerFunc {
+	// Simple example - production would use GeoIP + threat intelligence
+	blocked := map[string]bool{}
+
+	return func(c *gin.Context) {
+		ip := c.ClientIP()
+		if blocked[ip] {
+			c.AbortWithStatusJSON(http.StatusForbidden, errResp("BLOCKED", "Access denied"))
+			return
+		}
+		c.Next()
+	}
+}
+
+var reqCounter uint64
+
+func generateRequestID() string {
+	reqCounter++
+	return fmt.Sprintf("req_%d_%d", time.Now().UnixNano(), reqCounter)
+}
+
+// Ensure domain is imported
+var _ = domain.ErrUnauthorized

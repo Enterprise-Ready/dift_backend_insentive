@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package reward.redeem;
+
+option go_package = "reward-service/internal/pb/redeem;redeempb";
+
+message RedeemRequest {
+  string redeem_id = 1; // idempotency key
+  string user_id   = 2;
+  int64  point     = 3;
+}
+
+message RedeemResult {
+  string redeem_id = 1;
+  string user_id   = 2;
+  int64  point     = 3;
+  bool   success   = 4;
+  string reason    = 5;
+}

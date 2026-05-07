@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package coupon;
+
+option go_package = "coupon-service/proto/pb/coupon";
+
+enum CouponEventType {
+  CREATED = 0;
+  UPDATED = 1;
+  DEACTIVATED = 2;
+  CLAIMED = 3;
+}
+
+message CouponEvent {
+
+  CouponEventType type = 1;
+
+  string user_id = 2;
+
+  string coupon_code = 3;
+
+  string discount_type = 4;
+
+  double discount_value = 5;
+
+  double min_order = 6;
+
+  double max_discount = 7;
+
+  int32 max_usage = 8;
+
+  string valid_from = 9;
+
+  string valid_to = 10;
+
+}

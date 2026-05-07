@@ -1,0 +1,334 @@
+package domain
+
+import (
+	"time"
+
+	"github.com/shopspring/decimal"
+)
+
+// ============================================================
+// ENUMS & CONSTANTS
+// ============================================================
+
+type PaymentStatus string
+type PaymentMethod string
+type PaymentProvider string
+type Currency string
+type TransactionType string
+type RiskLevel string
+type WebhookEvent string
+type RefundStatus string
+
+const (
+	// Payment Statuses
+	StatusPending    PaymentStatus = "PENDING"
+	StatusProcessing PaymentStatus = "PROCESSING"
+	StatusSuccess    PaymentStatus = "SUCCESS"
+	StatusFailed     PaymentStatus = "FAILED"
+	StatusCancelled  PaymentStatus = "CANCELLED"
+	StatusRefunded   PaymentStatus = "REFUNDED"
+	StatusPartialRef PaymentStatus = "PARTIALLY_REFUNDED"
+	StatusExpired    PaymentStatus = "EXPIRED"
+	StatusDisputed   PaymentStatus = "DISPUTED"
+	StatusChargeback PaymentStatus = "CHARGEBACK"
+
+	// Payment Methods
+	MethodQRCode     PaymentMethod = "QR_CODE"
+	MethodBankTx     PaymentMethod = "BANK_TRANSFER"
+	MethodPromptPay  PaymentMethod = "PROMPTPAY"
+	MethodCreditCard PaymentMethod = "CREDIT_CARD"
+	MethodDebitCard  PaymentMethod = "DEBIT_CARD"
+	MethodWallet     PaymentMethod = "E_WALLET"
+	MethodInstalment PaymentMethod = "INSTALMENT"
+	MethodCrypto     PaymentMethod = "CRYPTO"
+
+	// Providers
+	ProviderOmise       PaymentProvider = "OMISE"
+	ProviderGBPrimePay  PaymentProvider = "GBPRIMEPAY"
+	ProviderKBank       PaymentProvider = "KBANK"
+	ProviderSCB         PaymentProvider = "SCB"
+	ProviderKTB         PaymentProvider = "KTB"
+	ProviderBBL         PaymentProvider = "BBL"
+	ProviderBayPayment  PaymentProvider = "BAY"
+	ProviderTrueWallet  PaymentProvider = "TRUEWALLET"
+	ProviderLinePay     PaymentProvider = "LINEPAY"
+	ProviderStripe      PaymentProvider = "STRIPE"
+	ProviderPayPal      PaymentProvider = "PAYPAL"
+	ProviderAdyen       PaymentProvider = "ADYEN"
+	ProviderBraintree   PaymentProvider = "BRAINTREE"
+	ProviderPromptPay   PaymentProvider = "PROMPTPAY_BOT"
+	ProviderTwentyFour  PaymentProvider = "2C2P"
+
+	// Currencies
+	CurrencyTHB Currency = "THB"
+	CurrencyUSD Currency = "USD"
+	CurrencyEUR Currency = "EUR"
+	CurrencyJPY Currency = "JPY"
+	CurrencySGD Currency = "SGD"
+
+	// Transaction Types
+	TxTypeCharge   TransactionType = "CHARGE"
+	TxTypeRefund   TransactionType = "REFUND"
+	TxTypeCapture  TransactionType = "CAPTURE"
+	TxTypeVoid     TransactionType = "VOID"
+	TxTypeDispute  TransactionType = "DISPUTE"
+
+	// Risk Levels
+	RiskLow      RiskLevel = "LOW"
+	RiskMedium   RiskLevel = "MEDIUM"
+	RiskHigh     RiskLevel = "HIGH"
+	RiskCritical RiskLevel = "CRITICAL"
+
+	// Refund Statuses
+	RefundPending   RefundStatus = "PENDING"
+	RefundCompleted RefundStatus = "COMPLETED"
+	RefundFailed    RefundStatus = "FAILED"
+
+	// Webhook Events
+	WebhookPaymentSuccess  WebhookEvent = "payment.success"
+	WebhookPaymentFailed   WebhookEvent = "payment.failed"
+	WebhookRefundSuccess   WebhookEvent = "refund.success"
+	WebhookDisputeCreated  WebhookEvent = "dispute.created"
+	WebhookChargebackAlert WebhookEvent = "chargeback.alert"
+)
+
+// ============================================================
+// CORE ENTITIES
+// ============================================================
+
+// Payment is the main payment aggregate root
+type Payment struct {
+	ID              string          `json:"id" db:"id"`
+	MerchantID      string          `json:"merchant_id" db:"merchant_id"`
+	OrderID         string          `json:"order_id" db:"order_id"`
+	Amount          decimal.Decimal `json:"amount" db:"amount"`
+	Currency        Currency        `json:"currency" db:"currency"`
+	Method          PaymentMethod   `json:"method" db:"method"`
+	Provider        PaymentProvider `json:"provider" db:"provider"`
+	Status          PaymentStatus   `json:"status" db:"status"`
+	ReferenceID     string          `json:"reference_id" db:"reference_id"`
+	ProviderRefID   string          `json:"provider_ref_id" db:"provider_ref_id"`
+	Description     string          `json:"description" db:"description"`
+	CustomerID      string          `json:"customer_id" db:"customer_id"`
+	CustomerEmail   string          `json:"customer_email" db:"customer_email"`
+	CustomerPhone   string          `json:"customer_phone" db:"customer_phone"`
+	CustomerName    string          `json:"customer_name" db:"customer_name"`
+	IPAddress       string          `json:"ip_address" db:"ip_address"`
+	UserAgent       string          `json:"user_agent" db:"user_agent"`
+	Metadata        JSONB           `json:"metadata" db:"metadata"`
+	CallbackURL     string          `json:"callback_url" db:"callback_url"`
+	ReturnURL       string          `json:"return_url" db:"return_url"`
+	QRCodeURL       string          `json:"qr_code_url,omitempty" db:"qr_code_url"`
+	QRCodeData      string          `json:"qr_code_data,omitempty" db:"qr_code_data"`
+	BankAccountNo   string          `json:"bank_account_no,omitempty" db:"bank_account_no"`
+	ExpiresAt       *time.Time      `json:"expires_at" db:"expires_at"`
+	PaidAt          *time.Time      `json:"paid_at" db:"paid_at"`
+	Fee             decimal.Decimal `json:"fee" db:"fee"`
+	NetAmount       decimal.Decimal `json:"net_amount" db:"net_amount"`
+	ExchangeRate    decimal.Decimal `json:"exchange_rate" db:"exchange_rate"`
+	FailureCode     string          `json:"failure_code,omitempty" db:"failure_code"`
+	FailureMessage  string          `json:"failure_message,omitempty" db:"failure_message"`
+	RiskScore       int             `json:"risk_score" db:"risk_score"`
+	RiskLevel       RiskLevel       `json:"risk_level" db:"risk_level"`
+	IdempotencyKey  string          `json:"idempotency_key" db:"idempotency_key"`
+	RetryCount      int             `json:"retry_count" db:"retry_count"`
+	CreatedAt       time.Time       `json:"created_at" db:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at" db:"updated_at"`
+	Transactions    []Transaction   `json:"transactions,omitempty" db:"-"`
+	Refunds         []Refund        `json:"refunds,omitempty" db:"-"`
+}
+
+// Transaction represents individual transaction records
+type Transaction struct {
+	ID            string          `json:"id" db:"id"`
+	PaymentID     string          `json:"payment_id" db:"payment_id"`
+	Type          TransactionType `json:"type" db:"type"`
+	Amount        decimal.Decimal `json:"amount" db:"amount"`
+	Currency      Currency        `json:"currency" db:"currency"`
+	Status        PaymentStatus   `json:"status" db:"status"`
+	Provider      PaymentProvider `json:"provider" db:"provider"`
+	ProviderRefID string          `json:"provider_ref_id" db:"provider_ref_id"`
+	RawRequest    JSONB           `json:"raw_request" db:"raw_request"`
+	RawResponse   JSONB           `json:"raw_response" db:"raw_response"`
+	ErrorCode     string          `json:"error_code" db:"error_code"`
+	ErrorMessage  string          `json:"error_message" db:"error_message"`
+	ProcessedAt   *time.Time      `json:"processed_at" db:"processed_at"`
+	CreatedAt     time.Time       `json:"created_at" db:"created_at"`
+}
+
+// Refund represents a refund operation
+type Refund struct {
+	ID            string          `json:"id" db:"id"`
+	PaymentID     string          `json:"payment_id" db:"payment_id"`
+	Amount        decimal.Decimal `json:"amount" db:"amount"`
+	Currency      Currency        `json:"currency" db:"currency"`
+	Status        RefundStatus    `json:"status" db:"status"`
+	Reason        string          `json:"reason" db:"reason"`
+	ProviderRefID string          `json:"provider_ref_id" db:"provider_ref_id"`
+	RequestedBy   string          `json:"requested_by" db:"requested_by"`
+	ProcessedAt   *time.Time      `json:"processed_at" db:"processed_at"`
+	CreatedAt     time.Time       `json:"created_at" db:"created_at"`
+}
+
+// Merchant represents a business entity using the gateway
+type Merchant struct {
+	ID            string    `json:"id" db:"id"`
+	Name          string    `json:"name" db:"name"`
+	BusinessType  string    `json:"business_type" db:"business_type"`
+	TaxID         string    `json:"tax_id" db:"tax_id"`
+	APIKey        string    `json:"-" db:"api_key"`
+	APISecret     string    `json:"-" db:"api_secret"`
+	WebhookURL    string    `json:"webhook_url" db:"webhook_url"`
+	WebhookSecret string    `json:"-" db:"webhook_secret"`
+	IsActive      bool      `json:"is_active" db:"is_active"`
+	Providers     JSONB     `json:"providers" db:"providers"`
+	FeeConfig     JSONB     `json:"fee_config" db:"fee_config"`
+	LimitConfig   JSONB     `json:"limit_config" db:"limit_config"`
+	CreatedAt     time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at" db:"updated_at"`
+}
+
+// CardToken stores tokenized card data (PCI-DSS compliant)
+type CardToken struct {
+	ID             string    `json:"id" db:"id"`
+	MerchantID     string    `json:"merchant_id" db:"merchant_id"`
+	CustomerID     string    `json:"customer_id" db:"customer_id"`
+	TokenHash      string    `json:"-" db:"token_hash"`
+	Last4          string    `json:"last4" db:"last4"`
+	Brand          string    `json:"brand" db:"brand"`
+	ExpiryMonth    int       `json:"expiry_month" db:"expiry_month"`
+	ExpiryYear     int       `json:"expiry_year" db:"expiry_year"`
+	ProviderToken  string    `json:"-" db:"provider_token"`
+	Provider       string    `json:"provider" db:"provider"`
+	IsDefault      bool      `json:"is_default" db:"is_default"`
+	CreatedAt      time.Time `json:"created_at" db:"created_at"`
+}
+
+// AuditLog records all significant events for compliance
+type AuditLog struct {
+	ID         string    `json:"id" db:"id"`
+	EntityType string    `json:"entity_type" db:"entity_type"`
+	EntityID   string    `json:"entity_id" db:"entity_id"`
+	Action     string    `json:"action" db:"action"`
+	ActorID    string    `json:"actor_id" db:"actor_id"`
+	ActorType  string    `json:"actor_type" db:"actor_type"`
+	IPAddress  string    `json:"ip_address" db:"ip_address"`
+	OldValue   JSONB     `json:"old_value" db:"old_value"`
+	NewValue   JSONB     `json:"new_value" db:"new_value"`
+	CreatedAt  time.Time `json:"created_at" db:"created_at"`
+}
+
+// WebhookDelivery tracks webhook delivery attempts
+type WebhookDelivery struct {
+	ID             string       `json:"id" db:"id"`
+	MerchantID     string       `json:"merchant_id" db:"merchant_id"`
+	PaymentID      string       `json:"payment_id" db:"payment_id"`
+	Event          WebhookEvent `json:"event" db:"event"`
+	URL            string       `json:"url" db:"url"`
+	Payload        JSONB        `json:"payload" db:"payload"`
+	ResponseStatus int          `json:"response_status" db:"response_status"`
+	ResponseBody   string       `json:"response_body" db:"response_body"`
+	AttemptCount   int          `json:"attempt_count" db:"attempt_count"`
+	NextRetryAt    *time.Time   `json:"next_retry_at" db:"next_retry_at"`
+	IsDelivered    bool         `json:"is_delivered" db:"is_delivered"`
+	CreatedAt      time.Time    `json:"created_at" db:"created_at"`
+	UpdatedAt      time.Time    `json:"updated_at" db:"updated_at"`
+}
+
+// RiskRule defines fraud detection rules
+type RiskRule struct {
+	ID          string    `json:"id" db:"id"`
+	Name        string    `json:"name" db:"name"`
+	Description string    `json:"description" db:"description"`
+	RuleType    string    `json:"rule_type" db:"rule_type"`
+	Conditions  JSONB     `json:"conditions" db:"conditions"`
+	Action      string    `json:"action" db:"action"`
+	Score       int       `json:"score" db:"score"`
+	IsActive    bool      `json:"is_active" db:"is_active"`
+	CreatedAt   time.Time `json:"created_at" db:"created_at"`
+}
+
+// JSONB is a helper type for PostgreSQL JSONB fields
+type JSONB map[string]interface{}
+
+// ============================================================
+// REQUEST / RESPONSE DTOs
+// ============================================================
+
+type CreatePaymentRequest struct {
+	MerchantID     string          `json:"merchant_id" validate:"required"`
+	OrderID        string          `json:"order_id" validate:"required,max=100"`
+	Amount         decimal.Decimal `json:"amount" validate:"required,gt=0"`
+	Currency       Currency        `json:"currency" validate:"required,oneof=THB USD EUR JPY SGD"`
+	Method         PaymentMethod   `json:"method" validate:"required"`
+	Provider       PaymentProvider `json:"provider,omitempty"`
+	Description    string          `json:"description" validate:"max=500"`
+	CustomerID     string          `json:"customer_id,omitempty"`
+	CustomerEmail  string          `json:"customer_email,omitempty" validate:"omitempty,email"`
+	CustomerPhone  string          `json:"customer_phone,omitempty"`
+	CustomerName   string          `json:"customer_name,omitempty"`
+	CardToken      string          `json:"card_token,omitempty"`
+	CardNumber     string          `json:"card_number,omitempty"`
+	CardExpiry     string          `json:"card_expiry,omitempty"`
+	CardCVV        string          `json:"card_cvv,omitempty"`
+	BankCode       string          `json:"bank_code,omitempty"`
+	PromptPayID    string          `json:"promptpay_id,omitempty"`
+	CallbackURL    string          `json:"callback_url,omitempty" validate:"omitempty,url"`
+	ReturnURL      string          `json:"return_url,omitempty" validate:"omitempty,url"`
+	Metadata       JSONB           `json:"metadata,omitempty"`
+	IdempotencyKey string          `json:"idempotency_key,omitempty"`
+	SaveCard       bool            `json:"save_card,omitempty"`
+	Instalment     *InstalmentOpts `json:"instalment,omitempty"`
+}
+
+type InstalmentOpts struct {
+	Terms    int    `json:"terms" validate:"required,oneof=3 6 10 12 18 24 36"`
+	BankCode string `json:"bank_code" validate:"required"`
+}
+
+type CreateRefundRequest struct {
+	PaymentID   string          `json:"payment_id" validate:"required"`
+	Amount      decimal.Decimal `json:"amount" validate:"required,gt=0"`
+	Reason      string          `json:"reason" validate:"required,max=200"`
+	RequestedBy string          `json:"requested_by" validate:"required"`
+}
+
+type PaymentResponse struct {
+	Payment     *Payment `json:"payment"`
+	ActionURL   string   `json:"action_url,omitempty"`
+	QRCodeImage string   `json:"qr_code_image,omitempty"`
+	DeepLink    string   `json:"deep_link,omitempty"`
+}
+
+type PaymentListRequest struct {
+	MerchantID string        `json:"merchant_id"`
+	Status     PaymentStatus `json:"status,omitempty"`
+	Method     PaymentMethod `json:"method,omitempty"`
+	DateFrom   *time.Time    `json:"date_from,omitempty"`
+	DateTo     *time.Time    `json:"date_to,omitempty"`
+	Page       int           `json:"page,omitempty"`
+	PageSize   int           `json:"page_size,omitempty"`
+}
+
+type PaymentListResponse struct {
+	Payments   []*Payment `json:"payments"`
+	Total      int64      `json:"total"`
+	Page       int        `json:"page"`
+	PageSize   int        `json:"page_size"`
+	TotalPages int        `json:"total_pages"`
+}
+
+type PaymentSummary struct {
+	MerchantID      string          `json:"merchant_id"`
+	TotalPayments   int64           `json:"total_payments"`
+	SuccessPayments int64           `json:"success_payments"`
+	FailedPayments  int64           `json:"failed_payments"`
+	TotalAmount     decimal.Decimal `json:"total_amount"`
+	TotalFees       decimal.Decimal `json:"total_fees"`
+	SuccessRate     float64         `json:"success_rate"`
+	AverageAmount   decimal.Decimal `json:"average_amount"`
+	ByMethod        map[string]int64 `json:"by_method"`
+	ByProvider      map[string]int64 `json:"by_provider"`
+	DateFrom        time.Time       `json:"date_from"`
+	DateTo          time.Time       `json:"date_to"`
+}

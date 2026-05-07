@@ -1,0 +1,193 @@
+🧠 ภาพรวม Coupon Service (Big Picture)
+
+Coupon Service มี 4 หน้าที่หลัก
+
+🧮 คำนวณ / ตรวจสอบคูปอง (runtime)
+
+🛠️ จัดการคูปอง (admin)
+
+📖 อ่านข้อมูลคูปอง (public / UI)
+
+📡 สื่อสารกับ service อื่นผ่าน Kafka
+
+1️⃣ HTTP – Public API (ฝั่ง User / UI)
+📍 Endpoint
+GET /coupons
+
+🧱 โค้ดที่เกี่ยวข้อง
+
+internal/adapter/http/coupon_handler.go
+
+internal/service/http/coupon_query_service.go
+
+CouponRepository.FindAllActive
+
+🔄 Flow
+User / UI
+  └─HTTP─▶ CouponQueryService
+             └─Postgres (read-only)
+
+🎯 ใช้เพื่ออะไร
+
+แสดงคูปองที่ใช้งานได้
+
+ไม่มี side effect
+
+ไม่ publish event
+
+2️⃣ HTTP – Admin API (ฝั่ง Backoffice / Admin)
+📍 Endpoint
+POST   /admin/coupons
+PUT    /admin/coupons/{code}
+DELETE /admin/coupons/{code}
+
+🧱 โค้ดที่เกี่ยวข้อง
+
+internal/adapter/http/admin/coupon_handler.go
+
+internal/service/admin/coupon_admin_service.go
+
+CouponRepository
+
+CouponEventPublisher
+
+🔄 Flow
+Admin UI
+  └─HTTP─▶ CouponAdminService
+             ├─Postgres (write)
+             └─Kafka (publish event)
+
+📡 Event ที่ส่งออก
+CouponCreated
+CouponUpdated
+CouponDeactivated
+
+🎯 ใช้เพื่ออะไร
+
+เปลี่ยน state ของระบบ
+
+แจ้ง service อื่นว่า “คูปองเปลี่ยนแล้วนะ”
+
+3️⃣ gRPC – Runtime Calculation (Order Service)
+📍 gRPC Server
+CouponCalculatorService
+
+🧱 โค้ดที่เกี่ยวข้อง
+
+internal/adapter/grpc
+
+internal/service/logic/coupon_calculator_service.go
+
+🔄 Flow
+Order Service
+  └─gRPC─▶ ApplyCoupon
+              └─Postgres (read)
+
+📥 Input
+userID
+couponCode
+orderTotal
+
+📤 Output
+finalTotal
+discount
+
+🎯 ใช้เพื่ออะไร
+
+คำนวณส่วนลดแบบ real-time
+
+ไม่แก้ DB
+
+ไม่ส่ง Kafka
+
+4️⃣ Kafka – Outbound Events (ส่งให้คนอื่น)
+📤 Producer
+
+internal/adapter/kafka/coupon_event_producer.go
+
+🧱 Event
+CouponEvent {
+  Type
+  UserID
+  CouponCode
+  Discount...
+}
+
+🔄 Flow
+CouponAdminService
+  └─Kafka─▶ coupon-events
+              ├─reward-service
+              ├─analytics
+              └─cache-service
+
+🎯 ใช้เพื่ออะไร
+
+Sync state ระหว่าง service
+
+Event-driven architecture
+
+ไม่ coupling กันตรง ๆ
+
+5️⃣ Kafka – Inbound Events (รับจากคนอื่น)
+📥 Consumer
+
+internal/adapter/kafka/user_coupon_consumer.go
+
+CouponEventConsumer
+
+🧱 Event ที่รับ (ตัวอย่าง)
+
+order completed
+
+user changed
+
+coupon redeemed (ถ้ามี)
+
+🔄 Flow
+Kafka Topic
+  └─▶ CouponEventConsumer
+        └─▶ CouponCommandService
+              └─(ตอนนี้) publish / extend logic ได้
+
+
+ตอนนี้ CouponCommandService ยังเน้น publish
+แต่ design พร้อมต่อ DB update / saga ได้เลย
+
+6️⃣ Database – Single Source of Truth
+🗄️ Postgres
+
+integration/postgres/coupon_repository.go
+
+🧱 ใช้โดย
+Service	ใช้ทำอะไร
+Admin	create / update / deactivate
+Query	list coupons
+Calculator	validate coupon
+Command	(รองรับ future event handling)
+🧭 สรุปการสื่อสารทั้งหมด (One-glance)
+Admin UI
+  └─HTTP─▶ CouponAdminService
+             ├─Postgres (write)
+             └─Kafka (coupon-events)
+
+User UI
+  └─HTTP─▶ CouponQueryService
+             └─Postgres (read)
+
+Order Service
+  └─gRPC─▶ CouponCalculatorService
+             └─Postgres (read)
+
+Kafka (order / user events)
+  └─▶ CouponEventConsumer
+        └─▶ CouponCommandService
+
+✅ ขอบเขต (Boundary) ชัดมาก
+
+HTTP → synchronous, user-driven
+
+gRPC → internal runtime
+
+Kafka → async, system-driven
+
+Postgres → state

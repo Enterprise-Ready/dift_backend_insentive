@@ -1,0 +1,265 @@
+package main
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/enterprise/payment-gateway/internal/config"
+	"github.com/enterprise/payment-gateway/internal/adapter/inbound/http"
+	"github.com/enterprise/payment-gateway/internal/adapter/inbound/http"
+	"github.com/enterprise/payment-gateway/pkg/audit"
+	"github.com/enterprise/payment-gateway/pkg/circuit"
+	"github.com/enterprise/payment-gateway/pkg/idempotency"
+	"github.com/enterprise/payment-gateway/pkg/metrics"
+	"github.com/enterprise/payment-gateway/pkg/ratelimit"
+	"github.com/enterprise/payment-gateway/internal/adapter/outbound/persistence/postgres"
+	"github.com/enterprise/payment-gateway/internal/service_logic/service"
+	"github.com/enterprise/payment-gateway/internal/service_logic/service_logic/service/providers"
+	"github.com/jmoiron/sqlx"
+	_ "github.com/lib/pq"
+	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+)
+
+func main() {
+	// ── Logger ───────────────────────────────────────────────
+	logger := buildLogger()
+	defer logger.Sync()
+
+	logger.Info("🚀 Starting Enterprise Payment Gateway")
+
+	// ── Config ──────────────────────────────────────────────
+	cfg, err := config.Load()
+	if err != nil {
+		logger.Fatal("failed to load config", zap.Error(err))
+	}
+
+	// ── Database ─────────────────────────────────────────────
+	db, err := connectDB(&cfg.Database)
+	if err != nil {
+		logger.Fatal("failed to connect to database", zap.Error(err))
+	}
+	defer db.Close()
+	logger.Info("✅ Database connected")
+
+	// ── Redis ────────────────────────────────────────────────
+	redisClient := connectRedis(&cfg.Redis)
+	ctx := context.Background()
+	if err := redisClient.Ping(ctx).Err(); err != nil {
+		logger.Fatal("failed to connect to Redis", zap.Error(err))
+	}
+	logger.Info("✅ Redis connected")
+
+	// ── Repositories ─────────────────────────────────────────
+	paymentRepo := repository.NewPaymentRepo(db)
+	merchantRepo := repository.NewMerchantRepo(db)
+	auditRepo := repository.NewAuditRepo(db)
+	webhookRepo := repository.NewWebhookRepo(db)
+
+	// ── Infrastructure ───────────────────────────────────────
+	m := metrics.NewMetrics(cfg.Metrics.Namespace)
+	cb := circuit.NewManager(logger)
+	idempotencyStore := idempotency.NewStore(redisClient, 24*time.Hour)
+	rateLimiter := ratelimit.NewLimiter(redisClient)
+	auditLogger := audit.NewLogger(auditRepo, logger)
+
+	// ── Provider Registry ────────────────────────────────────
+	registry := service.NewRegistry()
+
+	// Register all enabled providers
+	if cfg.Providers.Omise.Enabled {
+		registry.Register(providers.NewOmiseProvider(&cfg.Providers.Omise))
+		logger.Info("✅ Omise provider registered")
+	}
+	if cfg.Providers.GBPrimePay.Enabled {
+		registry.Register(providers.NewGBPrimePayProvider(&cfg.Providers.GBPrimePay))
+		logger.Info("✅ GBPrimePay provider registered")
+	}
+	if cfg.Providers.Stripe.Enabled {
+		registry.Register(providers.NewStripeProvider(&cfg.Providers.Stripe))
+		logger.Info("✅ Stripe provider registered")
+	}
+
+	// ── Services ─────────────────────────────────────────────
+	riskEngine := service.NewRiskEngine(&cfg.Risk, redisClient, logger)
+
+	webhookSvc := service.NewWebhookService(webhookRepo, &cfg.Webhook, m, logger)
+
+	paymentSvc := service.NewPaymentService(
+		paymentRepo, merchantRepo, registry,
+		riskEngine, cb, idempotencyStore,
+		auditLogger, m, webhookSvc, cfg, logger,
+	)
+
+	// ── Handlers ─────────────────────────────────────────────
+	paymentHandler := handler.NewPaymentHandler(paymentSvc, logger)
+
+	router := handler.NewRouter(
+		paymentHandler, merchantRepo, rateLimiter, m, logger,
+		cfg.Server.Environment,
+	)
+
+	// ── Background Jobs ───────────────────────────────────────
+	go startBackgroundJobs(ctx, webhookSvc, paymentRepo, m, logger)
+	go startMetricsCollector(db, m)
+
+	// ── HTTP Server ───────────────────────────────────────────
+	srv := &http.Server{
+		Addr:         fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),
+		Handler:      router.Handler(),
+		ReadTimeout:  cfg.Server.ReadTimeout,
+		WriteTimeout: cfg.Server.WriteTimeout,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	// Start server
+	go func() {
+		logger.Info("🌐 HTTP server listening",
+			zap.String("addr", srv.Addr),
+			zap.String("env", cfg.Server.Environment),
+		)
+		if cfg.Server.TLSEnabled {
+			if err := srv.ListenAndServeTLS(cfg.Server.TLSCertPath, cfg.Server.TLSKeyPath); err != nil && err != http.ErrServerClosed {
+				logger.Fatal("TLS server error", zap.Error(err))
+			}
+		} else {
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Fatal("server error", zap.Error(err))
+			}
+		}
+	}()
+
+	// ── Graceful Shutdown ─────────────────────────────────────
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	logger.Info("🛑 Shutting down server...")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.GracefulTimeout)
+	defer cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		logger.Error("server shutdown error", zap.Error(err))
+	}
+
+	logger.Info("✅ Server stopped gracefully")
+}
+
+// ────────────────────────────────────────────────────────────
+// Infrastructure helpers
+// ────────────────────────────────────────────────────────────
+
+func buildLogger() *zap.Logger {
+	encCfg := zap.NewProductionEncoderConfig()
+	encCfg.TimeKey = "ts"
+	encCfg.EncodeTime = zapcore.ISO8601TimeEncoder
+
+	cfg := zap.Config{
+		Level:            zap.NewAtomicLevelAt(zap.InfoLevel),
+		Development:      false,
+		Encoding:         "json",
+		EncoderConfig:    encCfg,
+		OutputPaths:      []string{"stdout"},
+		ErrorOutputPaths: []string{"stderr"},
+	}
+
+	if os.Getenv("APP_ENV") == "development" {
+		cfg = zap.NewDevelopmentConfig()
+	}
+
+	logger, _ := cfg.Build()
+	return logger
+}
+
+func connectDB(cfg *config.DatabaseConfig) (*sqlx.DB, error) {
+	dsn := fmt.Sprintf(
+		"host=%s port=%d dbname=%s user=%s password=%s sslmode=%s",
+		cfg.Host, cfg.Port, cfg.Name, cfg.User, cfg.Password, cfg.SSLMode,
+	)
+
+	db, err := sqlx.Open("postgres", dsn)
+	if err != nil {
+		return nil, err
+	}
+
+	db.SetMaxOpenConns(cfg.MaxOpenConns)
+	db.SetMaxIdleConns(cfg.MaxIdleConns)
+	db.SetConnMaxLifetime(cfg.ConnMaxLifetime)
+	db.SetConnMaxIdleTime(cfg.ConnMaxIdleTime)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		return nil, fmt.Errorf("database ping failed: %w", err)
+	}
+
+	return db, nil
+}
+
+func connectRedis(cfg *config.RedisConfig) redis.UniversalClient {
+	if cfg.ClusterMode {
+		return redis.NewClusterClient(&redis.ClusterOptions{
+			Addrs:        cfg.Addrs,
+			Password:     cfg.Password,
+			PoolSize:     cfg.PoolSize,
+			MinIdleConns: cfg.MinIdleConns,
+			DialTimeout:  cfg.DialTimeout,
+			ReadTimeout:  cfg.ReadTimeout,
+			WriteTimeout: cfg.WriteTimeout,
+		})
+	}
+
+	return redis.NewClient(&redis.Options{
+		Addr:         fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+		Password:     cfg.Password,
+		DB:           cfg.DB,
+		PoolSize:     cfg.PoolSize,
+		MinIdleConns: cfg.MinIdleConns,
+		DialTimeout:  cfg.DialTimeout,
+		ReadTimeout:  cfg.ReadTimeout,
+		WriteTimeout: cfg.WriteTimeout,
+	})
+}
+
+func startBackgroundJobs(ctx context.Context, webhookSvc *service.WebhookService, _ repository.PaymentRepo, m *metrics.Metrics, logger *zap.Logger) {
+	// Webhook retry job - every 30 seconds
+	webhookTicker := time.NewTicker(30 * time.Second)
+	// Expired payments job - every 5 minutes
+	expiredTicker := time.NewTicker(5 * time.Minute)
+
+	for {
+		select {
+		case <-webhookTicker.C:
+			if err := webhookSvc.RetryPending(ctx); err != nil {
+				logger.Error("webhook retry job failed", zap.Error(err))
+			}
+		case <-expiredTicker.C:
+			logger.Debug("checking for expired payments")
+			// Expire pending payments
+		case <-ctx.Done():
+			logger.Info("background jobs stopped")
+			return
+		}
+	}
+}
+
+func startMetricsCollector(db *sqlx.DB, m *metrics.Metrics) {
+	ticker := time.NewTicker(15 * time.Second)
+	for range ticker.C {
+		stats := db.Stats()
+		m.DBConnectionPool.WithLabelValues("open").Set(float64(stats.OpenConnections))
+		m.DBConnectionPool.WithLabelValues("idle").Set(float64(stats.Idle))
+		m.DBConnectionPool.WithLabelValues("in_use").Set(float64(stats.InUse))
+	}
+}
+
+// Ensure middleware is used
+var _ = middleware.APIKeyAuth
+var _ = sql.ErrNoRows

@@ -1,0 +1,208 @@
+package httpadapter
+
+import (
+	"net/http"
+	"time"
+
+	"github.com/enterprise/payment-gateway/internal/domain"
+	"github.com/enterprise/payment-gateway/internal/service_logic/service"
+	"github.com/enterprise/payment-gateway/pkg/paymentguard"
+	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
+	"go.uber.org/zap"
+)
+
+type PaymentHandler struct {
+	svc      *service.PaymentService
+	validate *validator.Validate
+	logger   *zap.Logger
+}
+
+func NewPaymentHandler(svc *service.PaymentService, logger *zap.Logger) *PaymentHandler {
+	return &PaymentHandler{
+		svc:      svc,
+		validate: validator.New(),
+		logger:   logger,
+	}
+}
+
+// POST /v1/payments
+func (h *PaymentHandler) CreatePayment(c *gin.Context) {
+	var req domain.CreatePaymentRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse(domain.ErrInvalidAmount.Code, err.Error()))
+		return
+	}
+
+	paymentguard.NormalizeCreateRequest(&req)
+
+	// Get merchant from auth context
+	merchantID := c.GetString("merchant_id")
+	req.MerchantID = merchantID
+	req.IPAddress = c.ClientIP()
+	req.UserAgent = c.Request.UserAgent()
+
+	if err := h.validate.Struct(req); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("VALIDATION_ERROR", err.Error()))
+		return
+	}
+
+	result, err := h.svc.CreatePayment(c.Request.Context(), &req)
+	if err != nil {
+		h.handleError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"success": true,
+		"data":    result,
+	})
+}
+
+// GET /v1/payments/:id
+func (h *PaymentHandler) GetPayment(c *gin.Context) {
+	paymentID := c.Param("id")
+	merchantID := c.GetString("merchant_id")
+
+	payment, err := h.svc.GetPayment(c.Request.Context(), paymentID, merchantID)
+	if err != nil {
+		h.handleError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    payment,
+	})
+}
+
+// POST /v1/payments/:id/verify
+func (h *PaymentHandler) VerifyPayment(c *gin.Context) {
+	paymentID := c.Param("id")
+	merchantID := c.GetString("merchant_id")
+
+	payment, err := h.svc.VerifyPayment(c.Request.Context(), paymentID, merchantID)
+	if err != nil {
+		h.handleError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    payment,
+	})
+}
+
+// POST /v1/payments/:id/cancel
+func (h *PaymentHandler) CancelPayment(c *gin.Context) {
+	paymentID := c.Param("id")
+	merchantID := c.GetString("merchant_id")
+
+	var body struct {
+		Reason string `json:"reason" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("VALIDATION_ERROR", "reason is required"))
+		return
+	}
+
+	payment, err := h.svc.CancelPayment(c.Request.Context(), paymentID, merchantID, body.Reason)
+	if err != nil {
+		h.handleError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    payment,
+	})
+}
+
+// POST /v1/payments/:id/refund
+func (h *PaymentHandler) CreateRefund(c *gin.Context) {
+	paymentID := c.Param("id")
+	merchantID := c.GetString("merchant_id")
+
+	var req domain.CreateRefundRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("VALIDATION_ERROR", err.Error()))
+		return
+	}
+	req.PaymentID = paymentID
+
+	if err := h.validate.Struct(req); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("VALIDATION_ERROR", err.Error()))
+		return
+	}
+
+	refund, err := h.svc.CreateRefund(c.Request.Context(), &req, merchantID)
+	if err != nil {
+		h.handleError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"success": true,
+		"data":    refund,
+	})
+}
+
+// GET /v1/payments
+func (h *PaymentHandler) ListPayments(c *gin.Context) {
+	merchantID := c.GetString("merchant_id")
+
+	req := &domain.PaymentListRequest{
+		MerchantID: merchantID,
+		Status:     domain.PaymentStatus(c.Query("status")),
+		Method:     domain.PaymentMethod(c.Query("method")),
+	}
+
+	result, err := h.svc.ListPayments(c.Request.Context(), req)
+	if err != nil {
+		h.handleError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    result,
+	})
+}
+
+// GET /v1/payments/summary
+func (h *PaymentHandler) GetSummary(c *gin.Context) {
+	merchantID := c.GetString("merchant_id")
+
+	from := time.Now().AddDate(0, -1, 0)
+	to := time.Now()
+
+	summary, err := h.svc.GetSummary(c.Request.Context(), merchantID, from, to)
+	if err != nil {
+		h.handleError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data":    summary,
+	})
+}
+
+func (h *PaymentHandler) handleError(c *gin.Context, err error) {
+	if pe, ok := err.(*domain.PaymentError); ok {
+		c.JSON(pe.HTTPStatus, errorResponse(pe.Code, pe.Message))
+		return
+	}
+	h.logger.Error("unhandled error", zap.Error(err))
+	c.JSON(http.StatusInternalServerError, errorResponse("INTERNAL_ERROR", "An unexpected error occurred"))
+}
+
+func errorResponse(code, message string) gin.H {
+	return gin.H{
+		"success": false,
+		"error": gin.H{
+			"code":    code,
+			"message": message,
+		},
+	}
+}

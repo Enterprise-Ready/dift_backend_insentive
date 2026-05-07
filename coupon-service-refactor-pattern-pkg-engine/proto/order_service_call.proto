@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package coupon_service;
+option go_package = "coupon-service/proto/pb/coupon_service";
+
+service CouponService {
+  rpc ApplyCoupon (ApplyCouponRequest)
+      returns (ApplyCouponResponse);
+}
+
+message ApplyCouponRequest {
+  string user_id = 1;
+  string coupon_code = 2;
+  double order_total = 3;
+}
+
+message ApplyCouponResponse {
+  double final_total = 1;
+  double discount = 2;
+  bool valid = 3;
+  string message = 4;
+}

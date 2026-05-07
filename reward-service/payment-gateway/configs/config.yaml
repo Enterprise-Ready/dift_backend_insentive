@@ -1,0 +1,166 @@
+server:
+  port: 8080
+  host: "0.0.0.0"
+  read_timeout: "30s"
+  write_timeout: "30s"
+  graceful_timeout: "15s"
+  tls_enabled: false
+  tls_cert_path: "/certs/server.crt"
+  tls_key_path: "/certs/server.key"
+  environment: "production"
+  version: "1.0.0"
+
+database:
+  host: "localhost"
+  port: 5432
+  name: "payment_gateway"
+  user: "pguser"
+  password: "CHANGE_ME_IN_PRODUCTION"
+  ssl_mode: "require"
+  max_open_conns: 25
+  max_idle_conns: 10
+  conn_max_lifetime: "5m"
+  conn_max_idle_time: "2m"
+  migration_path: "./migrations"
+
+redis:
+  host: "localhost"
+  port: 6379
+  password: ""
+  db: 0
+  pool_size: 20
+  min_idle_conns: 5
+  dial_timeout: "5s"
+  read_timeout: "3s"
+  write_timeout: "3s"
+  cluster_mode: false
+
+jwt:
+  secret: "CHANGE_ME_USE_256_BIT_KEY"
+  access_token_ttl: "15m"
+  refresh_token_ttl: "7d"
+  issuer: "payment-gateway"
+
+providers:
+  omise:
+    enabled: true
+    public_key: "pkey_test_xxxx"
+    secret_key: "skey_test_xxxx"
+    base_url: "https://api.omise.co"
+    timeout: "30s"
+
+  gbprimepay:
+    enabled: true
+    token: "xxxx"
+    secret_key: "xxxx"
+    base_url: "https://api.gbprimepay.com"
+    timeout: "30s"
+
+  kbank:
+    enabled: true
+    merchant_id: "xxxx"
+    api_key: "xxxx"
+    api_secret: "xxxx"
+    base_url: "https://openapi.kasikornbank.com"
+    timeout: "30s"
+
+  scb:
+    enabled: true
+    merchant_id: "xxxx"
+    api_key: "xxxx"
+    api_secret: "xxxx"
+    base_url: "https://api-sandbox.partners.scb"
+    timeout: "30s"
+
+  ktb:
+    enabled: false
+    merchant_id: "xxxx"
+    api_key: "xxxx"
+    api_secret: "xxxx"
+    base_url: "https://openapi.ktb.co.th"
+    timeout: "30s"
+
+  bbl:
+    enabled: false
+    merchant_id: "xxxx"
+    api_key: "xxxx"
+    api_secret: "xxxx"
+    base_url: "https://apiportal.bangkokbank.com"
+    timeout: "30s"
+
+  truewallet:
+    enabled: true
+    channel_id: "xxxx"
+    secret_key: "xxxx"
+    base_url: "https://merchant.truemoney.com"
+    timeout: "30s"
+
+  linepay:
+    enabled: true
+    channel_id: "xxxx"
+    secret_key: "xxxx"
+    base_url: "https://api-pay.line.me"
+    timeout: "30s"
+
+  stripe:
+    enabled: true
+    secret_key: "sk_test_xxxx"
+    webhook_key: "whsec_xxxx"
+    base_url: "https://api.stripe.com"
+    timeout: "30s"
+
+  paypal:
+    enabled: true
+    client_id: "xxxx"
+    secret: "xxxx"
+    base_url: "https://api-m.sandbox.paypal.com"
+    timeout: "30s"
+    sandbox: true
+
+  twoc2p:
+    enabled: true
+    merchant_id: "xxxx"
+    secret_key: "xxxx"
+    base_url: "https://sandbox-pgw.2c2p.com"
+    timeout: "30s"
+
+risk:
+  enabled: true
+  max_risk_score: 100
+  block_score: 80
+  review_score: 50
+  velocity_window_minutes: 60
+  max_transactions_per_hour: 50
+  max_amount_per_hour: 500000
+  enable_ip_blacklist: true
+  enable_card_blacklist: true
+  enable_device_tracking: true
+
+webhook:
+  max_retries: 5
+  retry_backoff: "30s"
+  timeout: "10s"
+  signature_header: "X-Webhook-Signature"
+  worker_count: 10
+
+metrics:
+  enabled: true
+  path: "/metrics"
+  namespace: "payment_gateway"
+
+crypto:
+  # Must be base64-encoded 32-byte key: openssl rand -base64 32
+  encryption_key: "CHANGE_ME_BASE64_32_BYTE_KEY="
+  use_kms: false
+  kms_region: "ap-southeast-1"
+  master_key_id: ""
+
+limits:
+  max_payment_amount: 1000000
+  min_payment_amount: 1
+  daily_limit_per_merchant: 10000000
+  daily_limit_per_card: 100000
+  rate_limit_per_second: 100
+  rate_limit_burst: 200
+  qr_code_expire_minutes: 15
+  payment_expire_minutes: 30
