@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package reward.event;
+
+option go_package = "reward-service/internal/pb/event;eventpb";
+
+// Event เมื่อ order เสร็จสมบูรณ์
+message OrderEvent {
+  string order_id = 1; // ใช้เป็น RefID
+  string user_id  = 2;
+  int64  point    = 3;
+}

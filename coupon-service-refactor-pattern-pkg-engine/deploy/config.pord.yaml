@@ -1,0 +1,20 @@
+app:
+  name: coupon-service
+  env: dev
+
+http:
+  port: "8080"
+
+grpc:
+  port: "9090"
+
+database:
+  dsn: postgres://postgres:postgres@localhost:5432/coupon?sslmode=disable
+
+redpanda:
+  brokers:
+    - localhost:9092
+  group_id: coupon-service-group
+  topics:
+    reward_coupon_command: reward.coupon.command.v1
+    user_coupon_created: user.coupon.created.v1

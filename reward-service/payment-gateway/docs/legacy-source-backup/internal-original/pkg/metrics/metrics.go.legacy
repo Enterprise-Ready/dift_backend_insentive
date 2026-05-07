@@ -1,0 +1,130 @@
+package metrics
+
+import (
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+)
+
+type Metrics struct {
+	PaymentTotal         *prometheus.CounterVec
+	PaymentDuration      *prometheus.HistogramVec
+	PaymentAmount        *prometheus.HistogramVec
+	ProviderRequests     *prometheus.CounterVec
+	ProviderLatency      *prometheus.HistogramVec
+	CircuitBreakerState  *prometheus.GaugeVec
+	ActivePayments       prometheus.Gauge
+	RefundTotal          *prometheus.CounterVec
+	WebhookDeliveries    *prometheus.CounterVec
+	WebhookLatency       *prometheus.HistogramVec
+	RiskScoreHistogram   prometheus.Histogram
+	FraudDetected        *prometheus.CounterVec
+	RateLimitHits        *prometheus.CounterVec
+	IdempotencyHits      *prometheus.CounterVec
+	DBConnectionPool     *prometheus.GaugeVec
+	CacheHitRate         *prometheus.CounterVec
+}
+
+func NewMetrics(namespace string) *Metrics {
+	return &Metrics{
+		PaymentTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "payment_total",
+			Help:      "Total number of payment attempts",
+		}, []string{"method", "provider", "status", "currency"}),
+
+		PaymentDuration: promauto.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "payment_duration_seconds",
+			Help:      "Payment processing duration",
+			Buckets:   []float64{0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30},
+		}, []string{"method", "provider", "status"}),
+
+		PaymentAmount: promauto.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "payment_amount",
+			Help:      "Payment amount distribution",
+			Buckets:   []float64{100, 500, 1000, 5000, 10000, 50000, 100000},
+		}, []string{"method", "currency"}),
+
+		ProviderRequests: promauto.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "provider_requests_total",
+			Help:      "Total requests to each payment provider",
+		}, []string{"provider", "operation", "status"}),
+
+		ProviderLatency: promauto.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "provider_latency_seconds",
+			Help:      "Provider API latency",
+			Buckets:   []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10},
+		}, []string{"provider", "operation"}),
+
+		CircuitBreakerState: promauto.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "circuit_breaker_state",
+			Help:      "Circuit breaker state (0=closed, 1=open, 2=half-open)",
+		}, []string{"provider"}),
+
+		ActivePayments: promauto.NewGauge(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "active_payments",
+			Help:      "Number of payments currently being processed",
+		}),
+
+		RefundTotal: promauto.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "refund_total",
+			Help:      "Total refund attempts",
+		}, []string{"status", "currency"}),
+
+		WebhookDeliveries: promauto.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "webhook_deliveries_total",
+			Help:      "Total webhook delivery attempts",
+		}, []string{"event", "status"}),
+
+		WebhookLatency: promauto.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "webhook_delivery_seconds",
+			Help:      "Webhook delivery latency",
+			Buckets:   prometheus.DefBuckets,
+		}, []string{"event"}),
+
+		RiskScoreHistogram: promauto.NewHistogram(prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "risk_score_distribution",
+			Help:      "Distribution of risk scores",
+			Buckets:   []float64{10, 20, 30, 40, 50, 60, 70, 80, 90, 100},
+		}),
+
+		FraudDetected: promauto.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "fraud_detected_total",
+			Help:      "Total fraud detections",
+		}, []string{"rule_type", "action"}),
+
+		RateLimitHits: promauto.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "rate_limit_hits_total",
+			Help:      "Rate limit hits",
+		}, []string{"merchant_id", "endpoint"}),
+
+		IdempotencyHits: promauto.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "idempotency_hits_total",
+			Help:      "Idempotency key cache hits",
+		}, []string{"merchant_id", "status"}),
+
+		DBConnectionPool: promauto.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "db_connection_pool",
+			Help:      "Database connection pool stats",
+		}, []string{"state"}),
+
+		CacheHitRate: promauto.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "cache_hits_total",
+			Help:      "Cache hit/miss counts",
+		}, []string{"cache", "result"}),
+	}
+}

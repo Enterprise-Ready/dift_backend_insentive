@@ -1,0 +1,23 @@
+http:
+  enable: true
+
+repository:
+  enable: true
+
+earn:
+  publish:
+    enable: true
+    transport: "nats"
+
+history:
+  consume:
+    enable: true
+    transport: "nats"
+
+redeem:
+  publish:
+    enable: true
+    transport: "nats"
+  consume:
+    enable: true
+    transport: "nats"

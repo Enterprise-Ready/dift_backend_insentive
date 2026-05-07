@@ -1,0 +1,17 @@
+messaging:
+  driver: nats
+
+http:
+  address: ":8080"
+
+nats:
+  url: "nats://localhost:4222"
+  subject_history: "history.created"
+  subject_reward_earn: "reward.earn"
+  subject_redeem_request: "redeem.request"
+  subject_redeem_result: "redeem.result"
+  durable_name: "reward-service"
+  stream_name: "REWARD_STREAM"
+
+db:
+  dsn: "postgres://user:pass@localhost:5432/reward?sslmode=disable"

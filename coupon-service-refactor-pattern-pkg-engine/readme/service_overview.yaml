@@ -1,0 +1,8 @@
+# Coupon Service
+
+Responsible for:
+- Claim coupon
+- Apply coupon
+- Manage coupon (admin)
+- Consume reward event
+- Publish user coupon event

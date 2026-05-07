@@ -1,0 +1,83 @@
+// =============================================
+// main.go — additions to wire the new systems
+// =============================================
+// เพิ่มส่วนนี้เข้าไปใน main() ของเดิม
+// หลังจาก db, repos, natsJS ถูก init แล้ว
+// =============================================
+
+package main
+
+/*
+
+// ── Redis client ─────────────────────────────────────────────────────
+// เพิ่ม import: "github.com/redis/go-redis/v9"
+// เพิ่ม config: cfg.Redis.Addr string
+
+redisClient := redis.NewClient(&redis.Options{
+    Addr:         cfg.Redis.Addr,
+    PoolSize:     100,        // รองรับ หมื่น req/s
+    MinIdleConns: 10,
+    DialTimeout:  3 * time.Second,
+    ReadTimeout:  2 * time.Second,
+    WriteTimeout: 2 * time.Second,
+})
+defer redisClient.Close()
+
+// ── Rule Repository ───────────────────────────────────────────────────
+ruleRepo := repoadapter.NewRuleRepository(db)
+
+// ── Coupon Intelligence Engine ────────────────────────────────────────
+intelligenceEngine := intelligence.NewCouponIntelligenceEngine(
+    ruleRepo,
+    couponRepo,
+    redisClient,
+)
+
+// ── Rate Limiter ──────────────────────────────────────────────────────
+rateLimiter := redisadapter.NewCouponClaimRateLimiter(
+    redisClient,
+    60*time.Second,  // window
+    10,              // max 10 claims per user per minute
+)
+
+// ── Saga Repository ───────────────────────────────────────────────────
+sagaRepo := repoadapter.NewSagaRepository(db)
+
+// ── Saga Steps ────────────────────────────────────────────────────────
+claimStep := sagastep.NewClaimStep(couponRepo, usageRepo, idempotencyRepo)
+reserveStep := sagastep.NewReserveStep(publisher)
+confirmStep := sagastep.NewConfirmStep(couponRepo, outboxRepo)
+
+// ── Saga Orchestrator ─────────────────────────────────────────────────
+orchestrator := saga.NewOrchestrator(
+    sagaRepo,
+    rateLimiter,
+    []saga.SagaStep{claimStep, reserveStep, confirmStep},
+)
+
+// ── Saga Recovery Worker (crash safety) ──────────────────────────────
+if features.EnableDatabase {
+    recoveryWorker := saga.NewRecoveryWorker(
+        sagaRepo,
+        orchestrator,
+        30*time.Second,   // scan interval
+        2*time.Minute,    // stale threshold
+    )
+    go recoveryWorker.Start(ctx)
+}
+
+// ── Register new HTTP routes ──────────────────────────────────────────
+// เพิ่มใน RegisterRoutes():
+//
+// POST /api/v1/coupons/apply        → Intelligence Engine (multi-coupon apply)
+// POST /api/v1/coupons/saga/start   → Start saga
+// GET  /api/v1/coupons/saga/{id}    → Poll saga status
+//
+// r.Post("/apply", intelligenceHandler.Apply)
+// r.Post("/saga/start", sagaHandler.Start)
+// r.Get("/saga/{id}", sagaHandler.GetStatus)
+
+_ = intelligenceEngine
+_ = orchestrator
+
+*/

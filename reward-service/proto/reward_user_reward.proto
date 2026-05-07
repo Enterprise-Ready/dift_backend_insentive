@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package reward.earn;
+
+option go_package = "reward-service/internal/pb/earn;earnpb";
+
+// ============================================
+// Reward Service → User Reward Service
+// ============================================
+message RewardEarn {
+  string earn_id = 1;   // idempotency key
+  string user_id = 2;
+  int64  point   = 3;
+
+  string source  = 4;   // trip | order | campaign
+  string ref_id  = 5;   // trip_id / order_id
+}

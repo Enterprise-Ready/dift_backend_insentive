@@ -1,0 +1,54 @@
+version: "3.9"
+
+services:
+
+  coupon-service:
+    build: .
+    container_name: coupon-service
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    depends_on:
+      - postgres
+      - redpanda
+    volumes:
+      - ./config/config.dev.yaml:/app/config/config.yaml
+    environment:
+      - APP_ENV=dev
+    networks:
+      - coupon-net
+
+  postgres:
+    image: postgres:15
+    container_name: coupon-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: coupon
+    ports:
+      - "5432:5432"
+    networks:
+      - coupon-net
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v23.2.8
+    container_name: redpanda
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp 1
+      - --memory 1G
+      - --reserve-memory 0M
+      - --node-id 0
+      - --check=false
+      - --kafka-addr PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://redpanda:9092
+    ports:
+      - "9092:9092"
+    networks:
+      - coupon-net
+
+networks:
+  coupon-net:
+    driver: bridge
